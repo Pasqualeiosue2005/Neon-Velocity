@@ -1,0 +1,15 @@
+{
+    "name": "Neon Velocity",
+    "short_name": "NeonVelocity",
+    "start_url": ".",
+    "display": "standalone",
+    "background_color": "#050510",
+    "theme_color": "#00f3ff",
+    "icons": [
+        {
+            "src": "/icon.png",
+            "sizes": "512x512",
+            "type": "image/png"
+        }
+    ]
+}

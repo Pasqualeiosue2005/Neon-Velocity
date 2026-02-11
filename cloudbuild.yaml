@@ -1,0 +1,111 @@
+steps:
+  # 1. Install Dependencies
+  - name: 'node:20'
+    entrypoint: 'npm'
+    args: ['install', '--legacy-peer-deps']
+
+  # 2. Build the Application
+  - name: 'node:20'
+    entrypoint: 'bash'
+    args: 
+      - '-c'
+      - |
+        echo "Creating .env file..."
+        echo "VITE_GEMINI_API_KEY=AIzaSyAj41lDM1O3lGvg65Iblt-RQEwDNhIzL2I" > .env
+        echo "GEMINI_API_KEY=AIzaSyAj41lDM1O3lGvg65Iblt-RQEwDNhIzL2I" >> .env
+        
+        echo "Starting build..."
+        npm run build
+        
+        # Ensure the output directory is 'dist'
+        if [ ! -d "dist" ]; then
+          echo "Error: Build directory 'dist' not found. Build failed."
+          exit 1
+        fi
+        echo "Build successful."
+
+  # 3. Create Bucket and Sync Static Files
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        # Variabili minuscole per evitare conflitti
+        static_bucket="${PROJECT_ID}-videogioco-static"
+        
+        echo "Checking bucket gs://$static_bucket..."
+        
+        if ! gsutil ls -b gs://$static_bucket > /dev/null 2>&1; then
+           echo "Creating bucket in europe-west8..."
+           gsutil mb -l europe-west8 gs://$static_bucket
+        fi
+        
+        echo "Syncing files..."
+        gsutil -m rsync -r -d dist gs://$static_bucket
+
+  # 4. Deploy to Compute Engine (VM)
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        set -e
+        # Variabili minuscole per evitare errori di sostituzione di Cloud Build
+        target_zone="europe-west8-b"
+        vm_name="videogioco-vm"
+        static_bucket="${PROJECT_ID}-videogioco-static"
+        
+        echo "Starting deployment to $vm_name in $target_zone..."
+        
+        STARTUP_SCRIPT='#! /bin/bash
+        apt-get update
+        apt-get install -y nginx
+        
+        # Configure Nginx for SPA
+        cat > /etc/nginx/sites-available/default <<EOF
+        server {
+            listen 80 default_server;
+            root /var/www/html;
+            index index.html;
+            location / {
+                try_files \$uri \$uri/ /index.html;
+            }
+        }
+        EOF
+        
+        # Pull files from bucket
+        rm -rf /var/www/html/*
+        gsutil -m rsync -r gs://'$static_bucket' /var/www/html
+        
+        chown -R www-data:www-data /var/www/html
+        systemctl restart nginx
+        '
+
+        # Create Firewall Rule if not exists
+        if ! gcloud compute firewall-rules describe allow-http-videogioco > /dev/null 2>&1; then
+          gcloud compute firewall-rules create allow-http-videogioco \
+            --action=ALLOW \
+            --direction=INGRESS \
+            --rules=tcp:80 \
+            --target-tags=http-server
+        fi
+
+        # Create or Reset Instance
+        if gcloud compute instances describe $vm_name --zone=$target_zone > /dev/null 2>&1; then
+          echo "Instance exists. Resetting..."
+          gcloud compute instances add-metadata $vm_name --zone=$target_zone --metadata startup-script="$STARTUP_SCRIPT"
+          gcloud compute instances reset $vm_name --zone=$target_zone
+        else
+          echo "Creating new instance..."
+          gcloud compute instances create $vm_name \
+            --zone=$target_zone \
+            --machine-type=e2-medium \
+            --tags=http-server \
+            --image-family=debian-11 \
+            --image-project=debian-cloud \
+            --scopes=storage-ro,logging-write,monitoring-write \
+            --metadata startup-script="$STARTUP_SCRIPT"
+        fi
+
+options:
+  logging: CLOUD_LOGGING_ONLY

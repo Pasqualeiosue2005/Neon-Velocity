@@ -1,0 +1,1 @@
+﻿components/GameCanvas.tsx(2782,31): error TS1005: '}' expected.
